@@ -1,17 +1,360 @@
-{
-  "name": "Premium PDF Reader",
-  "short_name": "PDF Reader",
-  "description": "오프라인 지원 프리미엄 PDF eBook 리더",
-  "start_url": ".",
-  "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#1e293b",
-  "icons": [
-    {
-      "src": "https://cdn-icons-png.flaticon.com/512/337/337946.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
-  ]
-}
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Premium PDF eBook Reader</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1e293b">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.263.0/lucide.min.js"></script>
+    <style>
+        @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+        :root { 
+            --transition-speed: 260ms; 
+            --reader-bg: #f8fafc; 
+            --reader-text: #1e293b; 
+        }
+        body.theme-sepia { --reader-bg: #f4ecd8; --reader-text: #5b4636; }
+        body.theme-dark { --reader-bg: #1a1a1a; --reader-text: #d1d5db; }
+        body { 
+            font-family: 'Pretendard', sans-serif; 
+            background-color: var(--reader-bg); 
+            color: var(--reader-text); 
+            transition: background-color 0.3s; 
+            overscroll-behavior-y: contain; 
+        }
+        .hidden-view { display: none !important; }
+        #viewer-viewport { perspective: 1000px; overflow: auto; position: relative; height: 100%; }
+        #canvas-wrapper { position: relative; transition: transform var(--transition-speed); transform-origin: center top; margin: 2rem auto; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+        .reader-ui { transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s; z-index: 100; }
+        .ui-hidden .reader-ui-top { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+        .ui-hidden .reader-ui-bottom { transform: translateY(100%); opacity: 0; pointer-events: none; }
+        #brightness-overlay { position: fixed; inset: 0; background: black; pointer-events: none; z-index: 9999; mix-blend-mode: multiply; opacity: 0; }
+        .textLayer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden; opacity: 0.2; line-height: 1.0; mix-blend-mode: multiply; }
+        .tap-zone { height: 100%; cursor: pointer; }
+        .modal-base { background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
+        
+        /* 스피너 애니메이션 */
+        .loader { border: 3px solid #f3f3f3; border-top: 3px solid #3b82f6; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+    <div id="brightness-overlay"></div>
+
+    <!-- [1] 서재 화면 -->
+    <div id="library-view" class="h-full flex flex-col overflow-hidden">
+        <header class="bg-white border-b border-slate-200 px-6 py-4 flex-shrink-0 z-10 dark:bg-slate-900 dark:border-slate-800">
+            <div class="max-w-7xl mx-auto flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="bg-blue-600 p-2 rounded-lg text-white"><i data-lucide="book-marked"></i></div>
+                    <h1 class="text-xl font-bold tracking-tight">My PDF Library</h1>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div id="storage-info" class="hidden md:flex flex-col items-end text-[10px] text-slate-400">
+                        <span id="storage-usage-text">용량 확인 중...</span>
+                        <div class="w-24 h-1 bg-slate-100 rounded-full overflow-hidden mt-1">
+                            <div id="storage-bar" class="h-full bg-blue-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <button id="btn-upload" class="bg-blue-600 text-white px-5 py-2 rounded-full text-sm font-semibold hover:bg-blue-700 flex items-center gap-2 shadow-lg active:scale-95 transition-all">
+                        <i data-lucide="plus" class="w-4 h-4"></i><span>책 추가</span>
+                    </button>
+                    <input type="file" id="file-input" class="hidden" accept=".pdf">
+                </div>
+            </div>
+        </header>
+        <main class="flex-1 overflow-y-auto p-6">
+            <div id="book-container" class="max-w-7xl mx-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6"></div>
+            <div id="empty-state" class="hidden flex flex-col items-center justify-center py-40 text-slate-300">
+                <i data-lucide="library" class="w-20 h-20 mb-4 opacity-20"></i>
+                <p>서재가 비어있습니다. PDF 파일을 추가해 보세요.</p>
+            </div>
+        </main>
+    </div>
+
+    <!-- [2] 리더 화면 -->
+    <div id="reader-view" class="fixed inset-0 z-[100] hidden flex flex-col overflow-hidden">
+        <div id="tap-zones" class="absolute inset-0 flex z-40 pointer-events-all">
+            <div class="tap-zone w-1/4" id="zone-prev"></div>
+            <div class="tap-zone w-2/4" id="zone-menu"></div>
+            <div class="tap-zone w-1/4" id="zone-next"></div>
+        </div>
+
+        <nav class="reader-ui reader-ui-top h-14 flex items-center justify-between px-4 bg-slate-800/90 backdrop-blur text-slate-200 border-b border-slate-700/50">
+            <div class="flex items-center gap-2">
+                <button id="btn-reader-back" class="p-2 hover:bg-slate-700 rounded-lg"><i data-lucide="arrow-left" class="w-5 h-5"></i></button>
+                <h2 id="reader-title" class="font-medium text-sm truncate max-w-[150px] md:max-w-md ml-2 text-white">제목</h2>
+            </div>
+            <div class="flex items-center gap-1">
+                <button id="btn-fullscreen" class="p-2 hover:bg-slate-700 rounded-lg"><i data-lucide="maximize" class="w-5 h-5"></i></button>
+            </div>
+        </nav>
+
+        <div id="viewer-viewport" class="flex-1">
+            <div id="canvas-wrapper">
+                <canvas id="pdf-canvas"></canvas>
+                <div id="text-layer" class="textLayer"></div>
+            </div>
+            <div id="reader-loading" class="absolute inset-0 bg-slate-900/50 flex items-center justify-center z-10 hidden">
+                <div class="loader"></div>
+            </div>
+        </div>
+
+        <footer class="reader-ui reader-ui-bottom h-16 flex items-center px-6 bg-slate-800 text-slate-300 border-t border-slate-700">
+            <div class="flex items-center gap-4 w-full max-w-4xl mx-auto">
+                <button id="btn-page-prev" class="p-1 hover:text-white"><i data-lucide="chevron-left" class="w-6 h-6"></i></button>
+                <div class="flex-1 flex flex-col gap-1">
+                    <input type="range" id="page-slider" min="1" value="1" class="w-full h-1.5 bg-slate-600 rounded-lg appearance-none accent-blue-500 cursor-pointer">
+                    <div class="flex justify-between text-[10px] text-slate-500 font-bold px-1">
+                        <span id="current-page-display">P. 1</span>
+                        <span id="total-page-display">P. 1</span>
+                    </div>
+                </div>
+                <button id="btn-page-next" class="p-1 hover:text-white"><i data-lucide="chevron-right" class="w-6 h-6"></i></button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- 공통 알림 모달 -->
+    <div id="notice-modal" class="fixed inset-0 z-[300] hidden items-center justify-center p-4 modal-base">
+        <div class="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+            <h3 id="notice-title" class="text-lg font-bold mb-2 text-slate-800">알림</h3>
+            <p id="notice-desc" class="text-sm text-slate-500 mb-6 leading-relaxed"></p>
+            <button id="btn-notice-close" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition-all">확인</button>
+        </div>
+    </div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        const DB_NAME = 'pdf_reader_db_final';
+        
+        // [성능] 렌더링 큐 시스템: 여러 페이지 요청이 겹쳐도 순차적으로 처리
+        const RenderQueue = {
+            queue: Promise.resolve(),
+            add(task) {
+                this.queue = this.queue.then(() => task());
+                return this.queue;
+            }
+        };
+
+        const dbManager = {
+            db: null,
+            init() {
+                return new Promise((resolve) => {
+                    const req = indexedDB.open(DB_NAME, 1);
+                    req.onupgradeneeded = (e) => { e.target.result.createObjectStore('books', { keyPath: 'id' }); };
+                    req.onsuccess = (e) => { this.db = e.target.result; resolve(); };
+                });
+            },
+            async saveBook(book) {
+                const tx = this.db.transaction('books', 'readwrite');
+                tx.objectStore('books').put(book);
+                return new Promise(r => tx.oncomplete = r);
+            },
+            async getAllBooks() {
+                const tx = this.db.transaction('books', 'readonly');
+                return new Promise(r => tx.objectStore('books').getAll().onsuccess = (e) => r(e.target.result));
+            },
+            async getBook(id) {
+                const tx = this.db.transaction('books', 'readonly');
+                return new Promise(r => tx.objectStore('books').get(id).onsuccess = (e) => r(e.target.result));
+            }
+        };
+
+        const reader = {
+            state: { pdfDoc: null, pageNum: 1, scale: 1.2, uiHidden: false, renderTask: null },
+            
+            async open(id) {
+                document.getElementById('reader-loading').classList.remove('hidden');
+                try {
+                    const book = await dbManager.getBook(id);
+                    if (!book) throw new Error("도서를 찾을 수 없습니다.");
+
+                    const loadingTask = pdfjsLib.getDocument({
+                        data: new Uint8Array(await book.fileBlob.arrayBuffer())
+                    });
+
+                    // [안정성] 비밀번호 PDF 감지
+                    loadingTask.onPassword = (updatePassword, reason) => {
+                        const pass = prompt("이 문서는 비밀번호로 보호되어 있습니다. 비밀번호를 입력하세요:");
+                        if (pass) updatePassword(pass);
+                        else {
+                            this.close();
+                            ui.showNotice("오류", "비밀번호가 필요합니다.");
+                        }
+                    };
+
+                    this.state.pdfDoc = await loadingTask.promise;
+                    document.getElementById('reader-title').textContent = book.title;
+                    document.getElementById('total-page-display').textContent = `P. ${this.state.pdfDoc.numPages}`;
+                    document.getElementById('page-slider').max = this.state.pdfDoc.numPages;
+                    document.getElementById('reader-view').classList.remove('hidden-view');
+                    await this.renderPage(1);
+                } catch (err) {
+                    console.error(err);
+                    ui.showNotice("로딩 실패", "PDF 파일을 열 수 없습니다. 손상된 파일이거나 지원하지 않는 형식입니다.");
+                } finally {
+                    document.getElementById('reader-loading').classList.add('hidden');
+                }
+            },
+
+            async renderPage(num) {
+                if (num < 1 || num > this.state.pdfDoc.numPages) return;
+                
+                return RenderQueue.add(async () => {
+                    if (this.state.renderTask) this.state.renderTask.cancel();
+                    
+                    const page = await this.state.pdfDoc.getPage(num);
+                    const viewport = page.getViewport({ scale: this.state.scale });
+                    const canvas = document.getElementById('pdf-canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = viewport.width; canvas.height = viewport.height;
+
+                    this.state.renderTask = page.render({ canvasContext: ctx, viewport });
+                    try {
+                        await this.state.renderTask.promise;
+                        
+                        // 텍스트 레이어 렌더링
+                        const textContainer = document.getElementById('text-layer');
+                        textContainer.innerHTML = '';
+                        textContainer.style.width = canvas.width + 'px';
+                        textContainer.style.height = canvas.height + 'px';
+                        const textContent = await page.getTextContent();
+                        await pdfjsLib.renderTextLayer({ textContent, container: textContainer, viewport }).promise;
+
+                        this.state.pageNum = num;
+                        document.getElementById('current-page-display').textContent = `P. ${num}`;
+                        document.getElementById('page-slider').value = num;
+                    } catch (e) {
+                        if (e.name !== 'RenderingCancelledException') console.error(e);
+                    }
+                });
+            },
+
+            toggleUI() {
+                this.state.uiHidden = !this.state.uiHidden;
+                document.getElementById('reader-view').classList.toggle('ui-hidden', this.state.uiHidden);
+            },
+
+            close() {
+                document.getElementById('reader-view').classList.add('hidden-view');
+                this.state.pdfDoc = null;
+            }
+        };
+
+        const ui = {
+            async init() { 
+                await dbManager.init(); 
+                this.loadBooks(); 
+                this.bindEvents(); 
+                this.refreshIcons(); 
+                this.checkStorage();
+                this.registerPWA(); 
+            },
+
+            refreshIcons() { 
+                if (typeof lucide !== 'undefined') lucide.createIcons(); 
+                else setTimeout(() => this.refreshIcons(), 100); 
+            },
+
+            async checkStorage() {
+                // [안정성] 저장소 용량 확인 및 안내
+                if (navigator.storage && navigator.storage.estimate) {
+                    const { quota, usage } = await navigator.storage.estimate();
+                    const usagePercent = Math.round((usage / quota) * 100);
+                    const storageBar = document.getElementById('storage-bar');
+                    const storageText = document.getElementById('storage-usage-text');
+                    if (storageBar && storageText) {
+                        storageBar.style.width = usagePercent + '%';
+                        storageText.textContent = `용량: ${usagePercent}% 사용 중`;
+                        if (usagePercent > 85) storageBar.classList.replace('bg-blue-500', 'bg-red-500');
+                    }
+                }
+            },
+
+            bindEvents() {
+                document.getElementById('btn-upload').onclick = () => document.getElementById('file-input').click();
+                document.getElementById('file-input').onchange = (e) => this.handleUpload(e);
+                document.getElementById('btn-reader-back').onclick = () => reader.close();
+                document.getElementById('btn-notice-close').onclick = () => document.getElementById('notice-modal').classList.add('hidden');
+                
+                // Navigation
+                document.getElementById('zone-prev').onclick = () => reader.renderPage(reader.state.pageNum - 1);
+                document.getElementById('zone-next').onclick = () => reader.renderPage(reader.state.pageNum + 1);
+                document.getElementById('zone-menu').onclick = () => reader.toggleUI();
+                document.getElementById('page-slider').oninput = (e) => reader.renderPage(parseInt(e.target.value));
+                document.getElementById('btn-page-prev').onclick = () => reader.renderPage(reader.state.pageNum - 1);
+                document.getElementById('btn-page-next').onclick = () => reader.renderPage(reader.state.pageNum + 1);
+
+                document.getElementById('btn-fullscreen').onclick = () => {
+                    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+                    else document.exitFullscreen();
+                };
+            },
+
+            async handleUpload(e) {
+                const file = e.target.files[0];
+                if (!file || file.type !== 'application/pdf') return;
+
+                // 대용량 파일 체크
+                if (file.size > 100 * 1024 * 1024) {
+                    this.showNotice("알림", "100MB 이상의 대용량 파일은 브라우저 성능에 영향을 줄 수 있습니다.");
+                }
+
+                try {
+                    const blob = new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
+                    const pdf = await pdfjsLib.getDocument(URL.createObjectURL(blob)).promise;
+                    const page = await pdf.getPage(1);
+                    const vp = page.getViewport({ scale: 0.2 });
+                    const canvas = document.createElement('canvas');
+                    canvas.width = vp.width; canvas.height = vp.height;
+                    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+                    const cover = await new Promise(r => canvas.toBlob(r, 'image/jpeg'));
+
+                    await dbManager.saveBook({ id: crypto.randomUUID(), title: file.name.replace('.pdf', ''), fileBlob: blob, coverBlob: cover, createdAt: Date.now() });
+                    this.loadBooks();
+                    this.checkStorage();
+                } catch (err) {
+                    this.showNotice("오류", "PDF 파일을 처리하는 중에 문제가 발생했습니다.");
+                }
+            },
+
+            async loadBooks() {
+                const books = await dbManager.getAllBooks();
+                const container = document.getElementById('book-container');
+                const empty = document.getElementById('empty-state');
+                container.innerHTML = '';
+                if (books.length === 0) empty.classList.remove('hidden');
+                else {
+                    empty.classList.add('hidden');
+                    books.sort((a,b) => b.createdAt - a.createdAt).forEach(book => {
+                        const card = document.createElement('div');
+                        card.className = "cursor-pointer bg-white p-2 rounded-xl shadow-sm border border-slate-100 transition-all hover:shadow-md hover:-translate-y-1 group";
+                        card.onclick = () => reader.open(book.id);
+                        card.innerHTML = `<img src="${URL.createObjectURL(book.coverBlob)}" class="aspect-[3/4] object-cover rounded-lg mb-2 w-full group-hover:brightness-95 transition-all"><h3 class="text-xs font-bold truncate text-slate-700 px-1">${book.title}</h3>`;
+                        container.appendChild(card);
+                    });
+                }
+                this.refreshIcons();
+            },
+
+            showNotice(title, desc) {
+                document.getElementById('notice-title').textContent = title;
+                document.getElementById('notice-desc').textContent = desc;
+                document.getElementById('notice-modal').classList.remove('hidden');
+            },
+
+            registerPWA() { 
+                if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+                    navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW failed:', err.message));
+                }
+            }
+        };
+
+        window.onload = () => ui.init();
+    </script>
+</body>
+</html>
