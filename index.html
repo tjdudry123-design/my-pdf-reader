@@ -27,9 +27,10 @@
         }
         
         /* 뷰어 레이아웃 */
-        #viewer-viewport { perspective: 1000px; overflow: auto; position: relative; height: 100%; }
-        #canvas-wrapper { position: relative; transition: transform var(--transition-speed); transform-origin: center top; margin: 2rem auto; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
-        
+        #viewer-viewport { perspective: 1000px; overflow: auto; position: relative; height: 100%; display: flex; justify-content: center; align-items: flex-start; }
+        #canvas-wrapper { position: relative; transition: transform var(--transition-speed); transform-origin: center top; margin: 1rem auto; box-shadow: 0 10px 30px rgba(0,0,0,0.2); max-width: 100%; }
+        #pdf-canvas { display: block; max-width: 100%; height: auto !important; }
+
         /* UI 애니메이션 */
         .reader-ui { transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s; z-index: 100; }
         .ui-hidden .reader-ui-top { transform: translateY(-100%); opacity: 0; pointer-events: none; }
@@ -43,6 +44,10 @@
         /* 스피너 애니메이션 */
         .loader { border: 3px solid #f3f3f3; border-top: 3px solid #3b82f6; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* 삭제 버튼 스타일 */
+        .delete-btn { opacity: 0; transition: opacity 0.2s; }
+        .book-card:hover .delete-btn { opacity: 1; }
     </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden">
@@ -80,14 +85,14 @@
     </div>
 
     <!-- [2] 리더 화면 -->
-    <div id="reader-view" class="fixed inset-0 z-[100] hidden flex flex-col overflow-hidden bg-white">
+    <div id="reader-view" class="fixed inset-0 z-[100] hidden flex flex-col overflow-hidden bg-slate-100 dark:bg-zinc-900">
         <div id="tap-zones" class="absolute inset-0 flex z-40 pointer-events-all">
-            <div class="tap-zone w-1/4" id="zone-prev"></div>
-            <div class="tap-zone w-2/4" id="zone-menu"></div>
-            <div class="tap-zone w-1/4" id="zone-next"></div>
+            <div class="tap-zone w-1/4" id="zone-prev" title="이전 페이지"></div>
+            <div class="tap-zone w-2/4" id="zone-menu" title="메뉴 토글"></div>
+            <div class="tap-zone w-1/4" id="zone-next" title="다음 페이지"></div>
         </div>
 
-        <nav class="reader-ui reader-ui-top h-14 flex items-center justify-between px-4 bg-slate-800/90 backdrop-blur text-slate-200 border-b border-slate-700/50">
+        <nav class="reader-ui reader-ui-top h-14 flex items-center justify-between px-4 bg-slate-800 text-slate-200 border-b border-slate-700/50">
             <div class="flex items-center gap-2">
                 <button id="btn-reader-back" class="p-2 hover:bg-slate-700 rounded-lg"><i data-lucide="arrow-left" class="w-5 h-5"></i></button>
                 <h2 id="reader-title" class="font-medium text-sm truncate max-w-[150px] md:max-w-md ml-2 text-white">제목</h2>
@@ -102,7 +107,7 @@
                 <canvas id="pdf-canvas"></canvas>
                 <div id="text-layer" class="textLayer"></div>
             </div>
-            <div id="reader-loading" class="absolute inset-0 bg-slate-900/50 flex items-center justify-center z-10 hidden">
+            <div id="reader-loading" class="absolute inset-0 bg-slate-900/50 flex items-center justify-center z-[60] hidden">
                 <div class="loader"></div>
             </div>
         </div>
@@ -122,6 +127,21 @@
         </footer>
     </div>
 
+    <!-- 삭제 확인 모달 -->
+    <div id="delete-confirm-modal" class="fixed inset-0 z-[400] hidden items-center justify-center p-4 modal-base">
+        <div class="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl text-center">
+            <div class="w-16 h-16 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i data-lucide="trash-2" class="w-8 h-8"></i>
+            </div>
+            <h3 class="text-lg font-bold mb-2 text-slate-800">책 삭제</h3>
+            <p class="text-sm text-slate-500 mb-6">정말로 이 책을 서재에서 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.</p>
+            <div class="flex gap-3">
+                <button id="btn-delete-cancel" class="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-bold transition-all">취소</button>
+                <button id="btn-delete-confirm" class="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl font-bold transition-all">삭제</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 공통 알림 모달 -->
     <div id="notice-modal" class="fixed inset-0 z-[300] hidden items-center justify-center p-4 modal-base">
         <div class="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl text-center">
@@ -135,7 +155,6 @@
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const DB_NAME = 'pdf_reader_db_final';
         
-        // 렌더링 큐 시스템
         const RenderQueue = {
             queue: Promise.resolve(),
             add(task) {
@@ -158,6 +177,11 @@
                 tx.objectStore('books').put(book);
                 return new Promise(r => tx.oncomplete = r);
             },
+            async deleteBook(id) {
+                const tx = this.db.transaction('books', 'readwrite');
+                tx.objectStore('books').delete(id);
+                return new Promise(r => tx.oncomplete = r);
+            },
             async getAllBooks() {
                 const tx = this.db.transaction('books', 'readonly');
                 return new Promise(r => tx.objectStore('books').getAll().onsuccess = (e) => r(e.target.result));
@@ -169,7 +193,7 @@
         };
 
         const reader = {
-            state: { pdfDoc: null, pageNum: 1, scale: 1.2, uiHidden: false, renderTask: null },
+            state: { pdfDoc: null, pageNum: 1, scale: 1.0, uiHidden: false, renderTask: null },
             
             async open(id) {
                 document.getElementById('reader-loading').classList.remove('hidden');
@@ -181,24 +205,19 @@
                         data: new Uint8Array(await book.fileBlob.arrayBuffer())
                     });
 
-                    loadingTask.onPassword = (updatePassword, reason) => {
-                        const pass = prompt("비밀번호를 입력하세요:");
-                        if (pass) updatePassword(pass);
-                        else {
-                            this.close();
-                            ui.showNotice("오류", "비밀번호가 필요합니다.");
-                        }
-                    };
-
                     this.state.pdfDoc = await loadingTask.promise;
                     document.getElementById('reader-title').textContent = book.title;
                     document.getElementById('total-page-display').textContent = `P. ${this.state.pdfDoc.numPages}`;
                     document.getElementById('page-slider').max = this.state.pdfDoc.numPages;
                     
-                    // 화면 전환: 서재 숨기고 리더 보이기
                     document.getElementById('library-view').classList.add('hidden');
                     document.getElementById('reader-view').classList.remove('hidden');
                     
+                    const firstPage = await this.state.pdfDoc.getPage(1);
+                    const viewport = firstPage.getViewport({ scale: 1 });
+                    const containerWidth = document.getElementById('viewer-viewport').clientWidth - 40;
+                    this.state.scale = containerWidth / viewport.width;
+
                     await this.renderPage(1);
                 } catch (err) {
                     console.error(err);
@@ -211,6 +230,7 @@
 
             async renderPage(num) {
                 if (num < 1 || num > this.state.pdfDoc.numPages) return;
+                document.getElementById('reader-loading').classList.remove('hidden');
                 
                 return RenderQueue.add(async () => {
                     if (this.state.renderTask) this.state.renderTask.cancel();
@@ -219,7 +239,10 @@
                     const viewport = page.getViewport({ scale: this.state.scale });
                     const canvas = document.getElementById('pdf-canvas');
                     const ctx = canvas.getContext('2d');
-                    canvas.width = viewport.width; canvas.height = viewport.height;
+                    
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
                     this.state.renderTask = page.render({ canvasContext: ctx, viewport });
                     try {
@@ -235,8 +258,11 @@
                         this.state.pageNum = num;
                         document.getElementById('current-page-display').textContent = `P. ${num}`;
                         document.getElementById('page-slider').value = num;
+                        document.getElementById('viewer-viewport').scrollTop = 0;
                     } catch (e) {
                         if (e.name !== 'RenderingCancelledException') console.error(e);
+                    } finally {
+                        document.getElementById('reader-loading').classList.add('hidden');
                     }
                 });
             },
@@ -247,7 +273,6 @@
             },
 
             close() {
-                // 화면 전환: 리더 숨기고 서재 보이기
                 document.getElementById('reader-view').classList.add('hidden');
                 document.getElementById('library-view').classList.remove('hidden');
                 this.state.pdfDoc = null;
@@ -255,13 +280,14 @@
         };
 
         const ui = {
+            currentDeleteId: null,
+
             async init() { 
                 await dbManager.init(); 
                 this.loadBooks(); 
                 this.bindEvents(); 
                 this.refreshIcons(); 
                 this.checkStorage();
-                this.registerPWA(); 
             },
 
             refreshIcons() { 
@@ -278,7 +304,6 @@
                     if (storageBar && storageText) {
                         storageBar.style.width = usagePercent + '%';
                         storageText.textContent = `용량: ${usagePercent}% 사용 중`;
-                        if (usagePercent > 85) storageBar.classList.replace('bg-blue-500', 'bg-red-500');
                     }
                 }
             },
@@ -289,10 +314,25 @@
                 document.getElementById('btn-reader-back').onclick = () => reader.close();
                 document.getElementById('btn-notice-close').onclick = () => document.getElementById('notice-modal').classList.add('hidden');
                 
-                // Navigation
-                document.getElementById('zone-prev').onclick = () => reader.renderPage(reader.state.pageNum - 1);
-                document.getElementById('zone-next').onclick = () => reader.renderPage(reader.state.pageNum + 1);
+                // 삭제 모달 이벤트
+                document.getElementById('btn-delete-cancel').onclick = () => {
+                    document.getElementById('delete-confirm-modal').classList.add('hidden');
+                    this.currentDeleteId = null;
+                };
+                document.getElementById('btn-delete-confirm').onclick = async () => {
+                    if (this.currentDeleteId) {
+                        await dbManager.deleteBook(this.currentDeleteId);
+                        document.getElementById('delete-confirm-modal').classList.add('hidden');
+                        this.currentDeleteId = null;
+                        this.loadBooks();
+                        this.checkStorage();
+                    }
+                };
+
+                document.getElementById('zone-prev').onclick = (e) => { e.stopPropagation(); reader.renderPage(reader.state.pageNum - 1); };
+                document.getElementById('zone-next').onclick = (e) => { e.stopPropagation(); reader.renderPage(reader.state.pageNum + 1); };
                 document.getElementById('zone-menu').onclick = () => reader.toggleUI();
+                
                 document.getElementById('page-slider').oninput = (e) => reader.renderPage(parseInt(e.target.value));
                 document.getElementById('btn-page-prev').onclick = () => reader.renderPage(reader.state.pageNum - 1);
                 document.getElementById('btn-page-next').onclick = () => reader.renderPage(reader.state.pageNum + 1);
@@ -335,9 +375,31 @@
                     empty.classList.add('hidden');
                     books.sort((a,b) => b.createdAt - a.createdAt).forEach(book => {
                         const card = document.createElement('div');
-                        card.className = "cursor-pointer bg-white p-2 rounded-xl shadow-sm border border-slate-100 transition-all hover:shadow-md hover:-translate-y-1 group";
+                        card.className = "book-card relative cursor-pointer bg-white p-2 rounded-xl shadow-sm border border-slate-100 transition-all hover:shadow-md hover:-translate-y-1 group";
+                        
+                        // 도서 클릭 시 리더 열기
                         card.onclick = () => reader.open(book.id);
-                        card.innerHTML = `<img src="${URL.createObjectURL(book.coverBlob)}" class="aspect-[3/4] object-cover rounded-lg mb-2 w-full group-hover:brightness-95 transition-all"><h3 class="text-xs font-bold truncate text-slate-700 px-1">${book.title}</h3>`;
+
+                        card.innerHTML = `
+                            <div class="relative aspect-[3/4] bg-slate-50 rounded-lg overflow-hidden mb-2">
+                                <img src="${URL.createObjectURL(book.coverBlob)}" class="w-full h-full object-cover group-hover:brightness-95 transition-all">
+                                <!-- 삭제 버튼 -->
+                                <button class="delete-btn absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-lg shadow-lg hover:bg-red-600 transition-all z-20" title="삭제">
+                                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                                </button>
+                            </div>
+                            <h3 class="text-xs font-bold truncate text-slate-700 px-1">${book.title}</h3>
+                        `;
+
+                        // 삭제 버튼 클릭 이벤트 (상위 도서 클릭 이벤트 전파 방지)
+                        const delBtn = card.querySelector('.delete-btn');
+                        delBtn.onclick = (e) => {
+                            e.stopPropagation();
+                            this.currentDeleteId = book.id;
+                            document.getElementById('delete-confirm-modal').classList.remove('hidden');
+                            this.refreshIcons();
+                        };
+
                         container.appendChild(card);
                     });
                 }
@@ -348,12 +410,6 @@
                 document.getElementById('notice-title').textContent = title;
                 document.getElementById('notice-desc').textContent = desc;
                 document.getElementById('notice-modal').classList.remove('hidden');
-            },
-
-            registerPWA() { 
-                if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-                    navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW failed:', err.message));
-                }
             }
         };
 
