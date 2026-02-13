@@ -25,12 +25,16 @@
             transition: background-color 0.3s; 
             overscroll-behavior-y: contain; 
         }
-        .hidden-view { display: none !important; }
+        
+        /* 뷰어 레이아웃 */
         #viewer-viewport { perspective: 1000px; overflow: auto; position: relative; height: 100%; }
         #canvas-wrapper { position: relative; transition: transform var(--transition-speed); transform-origin: center top; margin: 2rem auto; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+        
+        /* UI 애니메이션 */
         .reader-ui { transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s; z-index: 100; }
         .ui-hidden .reader-ui-top { transform: translateY(-100%); opacity: 0; pointer-events: none; }
         .ui-hidden .reader-ui-bottom { transform: translateY(100%); opacity: 0; pointer-events: none; }
+        
         #brightness-overlay { position: fixed; inset: 0; background: black; pointer-events: none; z-index: 9999; mix-blend-mode: multiply; opacity: 0; }
         .textLayer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden; opacity: 0.2; line-height: 1.0; mix-blend-mode: multiply; }
         .tap-zone { height: 100%; cursor: pointer; }
@@ -50,7 +54,7 @@
             <div class="max-w-7xl mx-auto flex items-center justify-between">
                 <div class="flex items-center gap-3">
                     <div class="bg-blue-600 p-2 rounded-lg text-white"><i data-lucide="book-marked"></i></div>
-                    <h1 class="text-xl font-bold tracking-tight">My PDF Library</h1>
+                    <h1 class="text-xl font-bold tracking-tight text-slate-800">My PDF Library</h1>
                 </div>
                 <div class="flex items-center gap-4">
                     <div id="storage-info" class="hidden md:flex flex-col items-end text-[10px] text-slate-400">
@@ -76,7 +80,7 @@
     </div>
 
     <!-- [2] 리더 화면 -->
-    <div id="reader-view" class="fixed inset-0 z-[100] hidden flex flex-col overflow-hidden">
+    <div id="reader-view" class="fixed inset-0 z-[100] hidden flex flex-col overflow-hidden bg-white">
         <div id="tap-zones" class="absolute inset-0 flex z-40 pointer-events-all">
             <div class="tap-zone w-1/4" id="zone-prev"></div>
             <div class="tap-zone w-2/4" id="zone-menu"></div>
@@ -120,7 +124,7 @@
 
     <!-- 공통 알림 모달 -->
     <div id="notice-modal" class="fixed inset-0 z-[300] hidden items-center justify-center p-4 modal-base">
-        <div class="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+        <div class="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl text-center">
             <h3 id="notice-title" class="text-lg font-bold mb-2 text-slate-800">알림</h3>
             <p id="notice-desc" class="text-sm text-slate-500 mb-6 leading-relaxed"></p>
             <button id="btn-notice-close" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition-all">확인</button>
@@ -131,7 +135,7 @@
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         const DB_NAME = 'pdf_reader_db_final';
         
-        // [성능] 렌더링 큐 시스템: 여러 페이지 요청이 겹쳐도 순차적으로 처리
+        // 렌더링 큐 시스템
         const RenderQueue = {
             queue: Promise.resolve(),
             add(task) {
@@ -177,9 +181,8 @@
                         data: new Uint8Array(await book.fileBlob.arrayBuffer())
                     });
 
-                    // [안정성] 비밀번호 PDF 감지
                     loadingTask.onPassword = (updatePassword, reason) => {
-                        const pass = prompt("이 문서는 비밀번호로 보호되어 있습니다. 비밀번호를 입력하세요:");
+                        const pass = prompt("비밀번호를 입력하세요:");
                         if (pass) updatePassword(pass);
                         else {
                             this.close();
@@ -191,11 +194,16 @@
                     document.getElementById('reader-title').textContent = book.title;
                     document.getElementById('total-page-display').textContent = `P. ${this.state.pdfDoc.numPages}`;
                     document.getElementById('page-slider').max = this.state.pdfDoc.numPages;
-                    document.getElementById('reader-view').classList.remove('hidden-view');
+                    
+                    // 화면 전환: 서재 숨기고 리더 보이기
+                    document.getElementById('library-view').classList.add('hidden');
+                    document.getElementById('reader-view').classList.remove('hidden');
+                    
                     await this.renderPage(1);
                 } catch (err) {
                     console.error(err);
-                    ui.showNotice("로딩 실패", "PDF 파일을 열 수 없습니다. 손상된 파일이거나 지원하지 않는 형식입니다.");
+                    ui.showNotice("로딩 실패", "PDF 파일을 열 수 없습니다.");
+                    this.close();
                 } finally {
                     document.getElementById('reader-loading').classList.add('hidden');
                 }
@@ -217,7 +225,6 @@
                     try {
                         await this.state.renderTask.promise;
                         
-                        // 텍스트 레이어 렌더링
                         const textContainer = document.getElementById('text-layer');
                         textContainer.innerHTML = '';
                         textContainer.style.width = canvas.width + 'px';
@@ -240,7 +247,9 @@
             },
 
             close() {
-                document.getElementById('reader-view').classList.add('hidden-view');
+                // 화면 전환: 리더 숨기고 서재 보이기
+                document.getElementById('reader-view').classList.add('hidden');
+                document.getElementById('library-view').classList.remove('hidden');
                 this.state.pdfDoc = null;
             }
         };
@@ -261,7 +270,6 @@
             },
 
             async checkStorage() {
-                // [안정성] 저장소 용량 확인 및 안내
                 if (navigator.storage && navigator.storage.estimate) {
                     const { quota, usage } = await navigator.storage.estimate();
                     const usagePercent = Math.round((usage / quota) * 100);
@@ -298,11 +306,6 @@
             async handleUpload(e) {
                 const file = e.target.files[0];
                 if (!file || file.type !== 'application/pdf') return;
-
-                // 대용량 파일 체크
-                if (file.size > 100 * 1024 * 1024) {
-                    this.showNotice("알림", "100MB 이상의 대용량 파일은 브라우저 성능에 영향을 줄 수 있습니다.");
-                }
 
                 try {
                     const blob = new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
